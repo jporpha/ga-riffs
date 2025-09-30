@@ -1,14 +1,33 @@
 {
-  "name": "ga-riffs",
+  "name": "ga-riff",
   "version": "1.0.0",
-  "description": "",
+  "description": "Genetic Algorithm Riff Generator – Node.js CLI that evolves rhythmic patterns into MIDI riffs.",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js --preset techno",
+    "riff:techno": "node index.js --preset techno",
+    "riff:organic": "node index.js --preset organic",
+    "riff:tribal": "node index.js --preset tribal",
+    "riff:custom": "node index.js --preset custom --steps 16 --target-hits 7 --bpm 124",
+
+    "riff:euclid7": "node index.js --preset tribal --seed euclid:7 --outfile euclid7",
+    "riff:slow-organic": "node index.js --preset organic --steps 12 --bpm 100 --target-hits 4 --outfile org_slow",
+    "riff:dense-techno": "node index.js --preset techno --target-hits 9 --gens 400 --pop 200 --outfile tech_dense",
+    "riff:groovy-tribal": "node index.js --preset tribal --note 38 --velocity 95 --outfile tribal_groove",
+    "riff:odd-meter": "node index.js --preset custom --steps 14 --target-hits 6 --bpm 118 --outfile odd_7_8"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "genetic-algorithm",
+    "riff",
+    "midi",
+    "music",
+    "nodejs",
+    "cli",
+    "algorithmic-composition"
+  ],
+  "author": "JP Orfa",
+  "license": "MIT",
   "dependencies": {
     "midi-writer-js": "^3.1.1"
   }

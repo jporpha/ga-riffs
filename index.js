@@ -1,35 +1,124 @@
+// GA Riffs - Node.js (CLI + Presets)
+// Autor: JP + ChatGPT
+// Ejecuta: node index.js --help
+// Dependencias: midi-writer-js (npm i midi-writer-js)
+
 const fs = require('fs');
 const Midi = require('midi-writer-js');
 
-// ---------- Parámetros ----------
-const STEPS = 16;           // 16 = semicorcheas en 4/4, ajustable
-const POP_SIZE = 120;       // tamaño población
-const GENERATIONS = 200;    // iteraciones
-const ELITISM = 4;          // cuántos mejores pasan directo
-const MUTATION_RATE = 0.05; // prob. de mutación por bit
-const TOURNAMENT_K = 3;     // selección por torneo
+// ---------------- CLI PARSER (sin dependencias) ----------------
+function parseArgs(argv) {
+  const args = {};
+  for (let i = 2; i < argv.length; i++) {
+    let a = argv[i];
+    if (a.startsWith('--')) {
+      const k = a.replace(/^--/, '');
+      // boolean flags
+      if (k === 'help' || k === 'no-midi' || k === 'no-json') {
+        args[k] = true; continue;
+      }
+      // key=value ó key value
+      const next = argv[i + 1];
+      if (typeof next === 'undefined' || next.startsWith('--')) {
+        args[k] = true; // treat as boolean if no value
+      } else {
+        args[k] = next; i++;
+      }
+    }
+  }
+  return args;
+}
 
-// Música
-const TARGET_HITS = 6;      // densidad objetivo (golpes por compás)
-const BPM = 120;            // tempo del MIDI exportado
-const MIDI_NOTE = 36;       // C2 por defecto (cámbialo después a gusto)
-const VELOCITY = 90;        // 1-100 aprox. (midi-writer-js)
+function printHelp() {
+  console.log(`\nGenetic Algorithm Riff Generator (Node.js)\n\nUso básico:\n  node index.js --preset techno\n\nOpciones:\n  --preset <techno|organic|tribal|custom>  Selecciona un preset rítmico\n  --steps <n>         Número de steps por compás (p.ej. 16)\n  --bpm <n>           Tempo para el MIDI (default: 120)\n  --target-hits <n>   Golpes objetivo en el compás (p.ej. 6)\n  --gens <n>          Generaciones del GA (default: 200)\n  --pop <n>           Tamaño población (default: 120)\n  --elitism <n>       Individuos élite que pasan directo (default: 4)\n  --mut <0-1>         Prob. de mutación por bit (default: 0.05)\n  --k <n>             Torneo K (default: 3)\n  --note <n>          Nota MIDI (default: 36 = C2)\n  --velocity <1-100>  Velocidad de nota (default: 90)\n  --outfile <name>    Nombre base de salida (default: riff)\n  --seed <none|euclid:X>  Semilla inicial (ninguna o euclid con X golpes)\n  --no-midi           No exportar MIDI\n  --no-json           No exportar JSON\n  --help              Mostrar ayuda\n\nEjemplos:\n  node index.js --preset techno --gens 300\n  node index.js --preset organic --steps 12 --target-hits 5 --bpm 110\n  node index.js --preset tribal --seed euclid:7 --outfile tribal_7\n  node index.js --preset custom --steps 16 --target-hits 8 --mut 0.08\n`);
+}
 
-// ---------- Utilidades ----------
+// ---------------- PRESETS ----------------
+const PRESETS = {
+  techno: {
+    STEPS: 16,
+    TARGET_HITS: 6,
+    ACCENTS: [0, 4, 8, 12], // negras
+    SYNC_OPTY: 0.5,         // apetito por síncopa
+    LONG_RUN_PENALTY: 0.3,
+    DENSITY_W: 2.0,
+    STRONG_W: 1.6,
+    SYNC_W: 1.2,
+    VAR_W: 1.2,
+  },
+  organic: {
+    STEPS: 12,              // feel ternario / 12 steps
+    TARGET_HITS: 5,
+    ACCENTS: [0, 3, 6, 9],  // pulsos ternarios
+    SYNC_OPTY: 0.6,
+    LONG_RUN_PENALTY: 0.25,
+    DENSITY_W: 1.8,
+    STRONG_W: 1.3,
+    SYNC_W: 1.4,
+    VAR_W: 1.3,
+  },
+  tribal: {
+    STEPS: 16,
+    TARGET_HITS: 8,
+    ACCENTS: [0, 8],        // compases abiertos; peso menor a acentos clásicos
+    SYNC_OPTY: 0.7,
+    LONG_RUN_PENALTY: 0.2,
+    DENSITY_W: 1.7,
+    STRONG_W: 1.1,
+    SYNC_W: 1.5,
+    VAR_W: 1.4,
+  }
+};
+
+// ---------------- UTILIDADES ----------------
 function randInt(n) { return Math.floor(Math.random() * n); }
 function clone(arr) { return arr.slice(); }
-function randomGenome(steps = STEPS) {
-  // Densidad aleatoria suave (2..10), para no empezar con basura vacía
-  const hits = 2 + randInt(Math.min(10, steps));
+function countOnes(g) { return g.reduce((a,b)=>a+b,0); }
+
+function randomGenome(steps, seedOpt) {
+  if (seedOpt && seedOpt.startsWith('euclid:')) {
+    const hits = Math.max(1, parseInt(seedOpt.split(':')[1], 10) || 1);
+    return euclideanPattern(steps, hits);
+  }
+  const hits = Math.max(1, Math.min(steps, 2 + randInt(Math.min(10, steps))));
   const g = new Array(steps).fill(0);
   for (let i = 0; i < hits; i++) g[randInt(steps)] = 1;
   return g;
 }
 
-function countOnes(g) { return g.reduce((a,b)=>a+b,0); }
+// Algoritmo de Bjorklund (patrón euclidiano básico)
+function euclideanPattern(steps, pulses) {
+  pulses = Math.min(pulses, steps);
+  const pattern = [];
+  const counts = [];
+  const remainders = [];
+  remainders.push(pulses);
+  let divisor = steps - pulses;
+  let level = 0;
+  while (true) {
+    counts.push(Math.floor(divisor / remainders[level]));
+    remainders.push(divisor % remainders[level]);
+    divisor = remainders[level];
+    level += 1;
+    if (remainders[level] <= 1) { break; }
+  }
+  counts.push(divisor);
+  function build(level) {
+    if (level === -1) { pattern.push(0); }
+    else if (level === -2) { pattern.push(1); }
+    else {
+      for (let i = 0; i < counts[level]; i++) build(level - 1);
+      if (remainders[level] !== 0) build(level - 2);
+    }
+  }
+  build(level);
+  // pattern es de 0/1 pero puede quedar con longitud != steps, normalizamos:
+  if (pattern.length > steps) return pattern.slice(0, steps);
+  if (pattern.length < steps) return pattern.concat(new Array(steps - pattern.length).fill(0));
+  return pattern;
+}
 
 function runLengths(g) {
-  // longitudes de rachas de 1s
   const lens = [];
   let c = 0;
   for (let i=0;i<g.length;i++){
@@ -63,49 +152,53 @@ function variance(xs) {
   return v;
 }
 
-// ---------- Fitness ----------
-function fitness(g) {
-  // 1) Densidad cerca de objetivo
-  const hits = countOnes(g);
-  const densityScore = Math.max(0, 1 - Math.abs(hits - TARGET_HITS) / TARGET_HITS); // [0..1]
+// ---------------- FITNESS ----------------
+function makeFitness(cfg) {
+  const {
+    TARGET_HITS, ACCENTS, SYNC_OPTY,
+    LONG_RUN_PENALTY, DENSITY_W, STRONG_W, SYNC_W, VAR_W
+  } = cfg;
 
-  // 2) Acentos en tiempos fuertes (0, 4, 8, 12)
-  const strong = [0, 4, 8, 12].filter(i => i < g.length);
-  let strongScore = 0;
-  for (const i of strong) if (g[i] === 1) strongScore += 1;
-  strongScore = strongScore / strong.length; // [0..1]
+  return function fitness(g) {
+    const hits = countOnes(g);
+    const densityScore = Math.max(0, 1 - Math.abs(hits - TARGET_HITS) / Math.max(1, TARGET_HITS)); // [0..1]
 
-  // 3) Síncopa (off-beats). Premia golpes en posiciones impares (orientativo)
-  let syncop = 0;
-  for (let i=0;i<g.length;i++) if (g[i] === 1 && (i % 2 === 1)) syncop++;
-  const syncopScore = hits > 0 ? (syncop / hits) : 0; // [0..1]
+    let strongScore = 0;
+    if (ACCENTS && ACCENTS.length) {
+      let s = 0;
+      for (const i of ACCENTS) if (i < g.length && g[i] === 1) s++;
+      strongScore = s / ACCENTS.length;
+    }
 
-  // 4) Penalizar rachas largas (>3)
-  const rl = runLengths(g);
-  const longRuns = rl.filter(r => r >= 4).length;
-  const longRunPenalty = longRuns > 0 ? 0.3 * longRuns : 0; // resta
+    let syncop = 0;
+    for (let i=0;i<g.length;i++) if (g[i] === 1 && (i % 2 === 1)) syncop++;
+    // Ajuste por apetito de síncopa del preset
+    const syncopRatio = hits > 0 ? (syncop / hits) : 0;
+    const syncopScore = Math.min(1, syncopRatio + SYNC_OPTY * 0.15);
 
-  // 5) Variedad de IOI (inter-onset intervals). No queremos todo 1,1,1,1…
-  const ioi = interOnsetIntervals(g);
-  const varIOI = variance(ioi);
-  // Normaliza rudimentariamente: si var>2 ya está “bien”
-  const varietyScore = Math.min(1, varIOI / 2);
+    const rl = runLengths(g);
+    const longRuns = rl.filter(r => r >= 4).length;
+    const longRunPenalty = (longRuns > 0 ? LONG_RUN_PENALTY * longRuns : 0);
 
-  // 6) Evitar barras vacías (o con un único golpe)
-  const emptinessPenalty = hits === 0 ? 1.0 : (hits === 1 ? 0.4 : 0);
+    const ioi = interOnsetIntervals(g);
+    const varIOI = variance(ioi);
+    const varietyScore = Math.min(1, varIOI / 2);
 
-  let score = (
-    2.0 * densityScore +
-    1.5 * strongScore +
-    1.2 * syncopScore +
-    1.3 * varietyScore
-  ) - (longRunPenalty + emptinessPenalty);
+    const emptinessPenalty = hits === 0 ? 1.0 : (hits === 1 ? 0.4 : 0);
 
-  return score;
+    let score = (
+      DENSITY_W * densityScore +
+      STRONG_W * strongScore +
+      SYNC_W   * syncopScore +
+      VAR_W    * varietyScore
+    ) - (longRunPenalty + emptinessPenalty);
+
+    return score;
+  }
 }
 
-// ---------- GA Ops ----------
-function tournamentSelect(pop, k=TOURNAMENT_K) {
+// ---------------- GA ----------------
+function tournamentSelect(pop, k) {
   let best = null;
   for (let i=0;i<k;i++){
     const c = pop[randInt(pop.length)];
@@ -115,53 +208,45 @@ function tournamentSelect(pop, k=TOURNAMENT_K) {
 }
 
 function crossover(a, b) {
-  // 1-point crossover
-  const point = 1 + randInt(a.length-2); // evita extremos
-  const child = a.slice(0, point).concat(b.slice(point));
-  return child;
+  if (a.length !== b.length) throw new Error('Crossover length mismatch');
+  const point = 1 + randInt(a.length - 2);
+  return a.slice(0, point).concat(b.slice(point));
 }
 
-function mutate(g) {
+function mutate(g, rate) {
   const c = clone(g);
-  for (let i=0;i<c.length;i++){
-    if (Math.random() < MUTATION_RATE) c[i] = c[i] ? 0 : 1;
-  }
+  for (let i=0;i<c.length;i++) if (Math.random() < rate) c[i] = c[i] ? 0 : 1;
   return c;
 }
 
-// ---------- Bucle principal ----------
-function evolve() {
-  // Población inicial
-  let population = new Array(POP_SIZE).fill(0).map(()=>({ genome: randomGenome(), fit: 0 }));
+function evolve(cfg) {
+  const {
+    STEPS, POP_SIZE, GENERATIONS, ELITISM, MUTATION_RATE, TOURNAMENT_K,
+    FITNESS, BPM, MIDI_NOTE, VELOCITY, SEED
+  } = cfg;
 
-  // Evaluar
-  population.forEach(ind => ind.fit = fitness(ind.genome));
+  let population = new Array(POP_SIZE).fill(0).map(()=>({ genome: randomGenome(STEPS, SEED), fit: 0 }));
+  population.forEach(ind => ind.fit = FITNESS(ind.genome));
 
   for (let gen=0; gen<GENERATIONS; gen++){
-    // Ordenar por fitness desc
     population.sort((x,y)=> y.fit - x.fit);
-
-    // Log breve cada cierto tiempo
     if (gen % 20 === 0 || gen === GENERATIONS-1) {
       const best = population[0];
       console.log(`Gen ${gen} | best=${best.fit.toFixed(3)} | hits=${countOnes(best.genome)} | ${best.genome.join('')}`);
     }
 
-    // Nueva población con elitismo
     const next = [];
     for (let i=0;i<ELITISM;i++) next.push({ genome: clone(population[i].genome), fit: population[i].fit });
 
-    // Resto por cruce + mutación
     while (next.length < POP_SIZE) {
-      const p1 = tournamentSelect(population);
-      const p2 = tournamentSelect(population);
+      const p1 = tournamentSelect(population, TOURNAMENT_K);
+      const p2 = tournamentSelect(population, TOURNAMENT_K);
       let child = Math.random() < 0.9 ? crossover(p1, p2) : clone(p1);
-      child = mutate(child);
+      child = mutate(child, MUTATION_RATE);
       next.push({ genome: child, fit: 0 });
     }
 
-    // Evaluar nueva población
-    next.forEach(ind => ind.fit = fitness(ind.genome));
+    next.forEach(ind => ind.fit = FITNESS(ind.genome));
     population = next;
   }
 
@@ -169,55 +254,93 @@ function evolve() {
   return population[0];
 }
 
-// ---------- Export MIDI ----------
-function patternToMidi(genome, bpm=BPM, midiNote=MIDI_NOTE, velocity=VELOCITY) {
+// ---------------- EXPORT ----------------
+function patternToMidi(genome, bpm, midiNote, velocity, outfileBase) {
   const track = new Midi.Track();
   track.setTempo(bpm);
   track.addTrackName('GA Riff');
 
-  // Queremos que cada step sea una semicorchea => duración "16"
-  // midi-writer-js usa notación como "16", "8", "4"...
-  // Para convertir pasos a eventos: usamos "wait" para colocar el onset exacto.
   let waitSteps = 0;
   const events = [];
-
   for (let i=0;i<genome.length;i++){
     if (genome[i] === 1) {
-      // Añadimos una nota con "wait" acumulado
       events.push(new Midi.NoteEvent({
         pitch: [midiNote],
         duration: '16',
         velocity,
-        wait: waitSteps > 0 ? `T${waitSteps}` : undefined // Tn = ticks relativos; midi-writer-js usa ticks por step interno
+        wait: waitSteps > 0 ? `T${waitSteps}` : undefined
       }));
-      waitSteps = 0; // resetea
+      waitSteps = 0;
     } else {
-      waitSteps += 1; // acumula silencio
+      waitSteps += 1;
     }
   }
+  if (events.length === 0) {
+    // Forzar una nota corta al inicio para evitar MIDI vacío
+    events.push(new Midi.NoteEvent({ pitch: [midiNote], duration: '16', velocity }));
+  }
 
-  // Si termina en silencio, da igual; el compás cierra.
   track.addEvent(events);
   const write = new Midi.Writer([track]);
   const data = write.buildFile();
-  fs.writeFileSync('riff.mid', data, 'binary');
+  fs.writeFileSync(`${outfileBase}.mid`, data, 'binary');
 }
 
-function savePattern(genome) {
+function savePattern(genome, meta, outfileBase) {
   const out = {
     steps: genome.length,
     pattern: genome,
     onsets: onsets(genome),
-    targetHits: TARGET_HITS,
-    bpm: BPM,
-    note: MIDI_NOTE
+    ...meta
   };
-  fs.writeFileSync('pattern.json', JSON.stringify(out, null, 2));
+  fs.writeFileSync(`${outfileBase}.json`, JSON.stringify(out, null, 2));
 }
 
-// ---------- Run ----------
-const best = evolve();
-console.log('\nMejor patrón:', best.genome.join(' '), `| fitness=${best.fit.toFixed(3)}`);
-savePattern(best.genome);
-patternToMidi(best.genome);
-console.log('Guardados: riff.mid y pattern.json');
+// ---------------- MAIN ----------------
+(function main(){
+  const argv = parseArgs(process.argv);
+  if (argv.help) return printHelp();
+
+  const presetKey = (argv.preset || 'techno').toLowerCase();
+  const preset = PRESETS[presetKey] || PRESETS.techno;
+
+  const STEPS = parseInt(argv.steps || preset.STEPS, 10);
+  const TARGET_HITS = parseInt(argv['target-hits'] || preset.TARGET_HITS, 10);
+  const BPM = parseInt(argv.bpm || 120, 10);
+  const GENERATIONS = parseInt(argv.gens || 200, 10);
+  const POP_SIZE = parseInt(argv.pop || 120, 10);
+  const ELITISM = parseInt(argv.elitism || 4, 10);
+  const MUTATION_RATE = parseFloat(argv.mut || 0.05);
+  const TOURNAMENT_K = parseInt(argv.k || 3, 10);
+  const MIDI_NOTE = parseInt(argv.note || 36, 10);
+  const VELOCITY = parseInt(argv.velocity || 90, 10);
+  const OUTFILE = (argv.outfile || `${presetKey}_riff`).toString();
+  const SEED = (argv.seed || '').toString();
+
+  const FITNESS = makeFitness({
+    TARGET_HITS,
+    ACCENTS: preset.ACCENTS,
+    SYNC_OPTY: preset.SYNC_OPTY,
+    LONG_RUN_PENALTY: preset.LONG_RUN_PENALTY,
+    DENSITY_W: preset.DENSITY_W,
+    STRONG_W: preset.STRONG_W,
+    SYNC_W: preset.SYNC_W,
+    VAR_W: preset.VAR_W
+  });
+
+  const best = evolve({
+    STEPS, POP_SIZE, GENERATIONS, ELITISM, MUTATION_RATE, TOURNAMENT_K,
+    FITNESS, BPM, MIDI_NOTE, VELOCITY, SEED
+  });
+
+  console.log(`\nMejor patrón: ${best.genome.join(' ')} | fitness=${best.fit.toFixed(3)}`);
+
+  if (!argv['no-json']) {
+    savePattern(best.genome, { preset: presetKey, targetHits: TARGET_HITS, bpm: BPM, note: MIDI_NOTE }, OUTFILE);
+    console.log(`Guardado JSON: ${OUTFILE}.json`);
+  }
+  if (!argv['no-midi']) {
+    patternToMidi(best.genome, BPM, MIDI_NOTE, VELOCITY, OUTFILE);
+    console.log(`Guardado MIDI: ${OUTFILE}.mid`);
+  }
+})();

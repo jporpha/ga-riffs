@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Genetic Algorithm Riff Generator – Node.js CLI that evolves rhythmic patterns into MIDI riffs.",
   "main": "index.js",
-  "type": "module",
   "scripts": {
     "start": "node index.js --preset techno",
     "riff:techno": "node index.js --preset techno",
